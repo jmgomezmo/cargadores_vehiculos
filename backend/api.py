@@ -24,7 +24,6 @@ def get_db():
         cur.execute("SET search_path TO ocpp;")
     return conn
 
-# Frontend Models (Se Mantiene nomenclatura en inglés para compatibilidad con lo existente)
 class ReservationRequest(BaseModel):
     user_id: int
     charge_point_id: int
@@ -40,9 +39,10 @@ def crear_reserva(req: ReservationRequest):
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
+                # El estado inicial al agendar es 'Reservado'
                 cur.execute("""
                     INSERT INTO reservas (id_usuario, id_cargador, fecha_inicio, fecha_fin, estado)
-                    VALUES (%s, %s, %s, %s, 'Pendiente') RETURNING id_reserva;
+                    VALUES (%s, %s, %s, %s, 'Reservado') RETURNING id_reserva;
                 """, (req.user_id, req.charge_point_id, req.start_time, req.end_time))
                 res_id = cur.fetchone()[0]
                 conn.commit()
@@ -53,8 +53,31 @@ def crear_reserva(req: ReservationRequest):
 @app.post("/api/iniciar_carga")
 def iniciar_carga(req: StartChargeRequest):
     try:
-        payload_ocpp = {"charge_point_id": f"CP_AVANZADO_0{req.charge_point_id}", "id_tag": "TIME_TEST_TAG"}
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                # 1. Extracción del id_tag real
+                cur.execute("SELECT id_tag FROM usuarios WHERE id_usuario = %s;", (req.user_id,))
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404, detail="Usuario no encontrado")
+                id_tag_usuario = row[0]
+
+                # 2. Actualizar estado de reserva de 'Reservado' a 'Activa' si aplica
+                cur.execute("""
+                    UPDATE reservas 
+                    SET estado = 'Activa' 
+                    WHERE id_usuario = %s AND id_cargador = %s AND estado = 'Reservado'
+                      AND CURRENT_TIMESTAMP BETWEEN fecha_inicio AND fecha_fin;
+                """, (req.user_id, req.charge_point_id))
+                conn.commit()
+
+        payload_ocpp = {
+            "charge_point_id": f"CP_AVANZADO_0{req.charge_point_id}",
+            "id_tag": id_tag_usuario
+        }
+        
         respuesta = requests.post("http://127.0.0.1:9090/remote_start", json=payload_ocpp)
+        
         if respuesta.status_code == 200:
             return {"status": "success", "message": "Orden procesada"}
         
@@ -69,7 +92,10 @@ def iniciar_carga(req: StartChargeRequest):
 def detener_carga(req: StartChargeRequest):
     try:
         payload_ocpp = {"charge_point_id": f"CP_AVANZADO_0{req.charge_point_id}"}
+        
+        # respuesta = requests.post("http://api.cynergiax.com:9090/remote_stop", json=payload_ocpp)
         respuesta = requests.post("http://127.0.0.1:9090/remote_stop", json=payload_ocpp)
+        
         if respuesta.status_code == 200:
             return {"status": "success", "message": "Carga detenida"}
         
@@ -93,47 +119,69 @@ def get_usuario(user_id: int):
     except Exception as e:
          raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/cargador/{cp_id}/estado")
-def get_estado_cargador(cp_id: int):
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT ocpp_id, estado_actual FROM cargadores WHERE id_cargador = %s;", (cp_id,))
-                row = cur.fetchone()
-                if not row:
-                    raise HTTPException(status_code=404, detail="Cargador no encontrado")
-                return {"id": cp_id, "nombre": row[0], "estado": row[1]}
-    except Exception as e:
-         raise HTTPException(status_code=500, detail=str(e))
-
 @app.get("/api/sesion/activa/{user_id}")
 def get_sesion_activa(user_id: int):
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
+                # 1. Obtener tarifa activa
                 cur.execute("""
-                    SELECT t.id_sesion, t.fecha_inicio, t.medidor_inicio, 
+                    SELECT precio_por_kwh FROM tarifas 
+                    WHERE valido_desde <= CURRENT_TIMESTAMP 
+                      AND (valido_hasta IS NULL OR valido_hasta >= CURRENT_TIMESTAMP)
+                    ORDER BY valido_desde DESC LIMIT 1;
+                """)
+                tarifa_row = cur.fetchone()
+                precio_kwh = float(tarifa_row[0]) if tarifa_row else 1850.0
+
+                # 2. Buscar sesión activa y su cargador asociado en la tabla cargadores
+                cur.execute("""
+                    SELECT t.id_sesion, t.fecha_inicio, t.medidor_inicio, c.ocpp_id,
                            COALESCE((SELECT MAX(CAST(valor AS NUMERIC)) FROM telemetria WHERE id_sesion = t.id_sesion), t.medidor_inicio) as current_meter
                     FROM sesiones_carga t 
+                    JOIN cargadores c ON t.id_cargador = c.id_cargador
                     WHERE t.id_usuario = %s AND t.fecha_fin IS NULL 
                     ORDER BY t.fecha_inicio DESC LIMIT 1;
                 """, (user_id,))
                 row = cur.fetchone()
                 
-                if not row:
-                    return {"activa": False}
-                
-                trans_id, start_time, meter_start, current_meter = row
-                minutos = int((datetime.now(timezone.utc) - start_time).total_seconds() / 60)
-                kwh_consumidos = (float(current_meter) - float(meter_start)) / 1000.0
-                
-                return {
-                    "activa": True, "transaction_id": trans_id, "minutos": minutos,
-                    "energia_kwh": round(kwh_consumidos, 2), "potencia_kw": 7.2
-                }
+                # 3. Si no hay sesión activa, buscar si tiene una reserva vigente o próxima
+                ocpp_id_cargador = "VC-0428" # Valor por defecto
+                if row:
+                    trans_id, start_time, meter_start, ocpp_id_cargador, current_meter = row
+                    minutos = int((datetime.now(timezone.utc) - start_time).total_seconds() / 60)
+                    kwh_consumidos = (float(current_meter) - float(meter_start)) / 1000.0
+                    costo_estimado = round(kwh_consumidos * precio_kwh, 2)
+                    
+                    return {
+                        "activa": True, 
+                        "transaction_id": trans_id, 
+                        "minutos": minutos,
+                        "energia_kwh": round(kwh_consumidos, 2), 
+                        "potencia_kw": 7.2,
+                        "precio_por_kwh": precio_kwh,
+                        "costo_estimado": costo_estimado,
+                        "ocpp_id": ocpp_id_cargador
+                    }
+                else:
+                    # Buscar cargador de la reserva más próxima del usuario
+                    cur.execute("""
+                        SELECT c.ocpp_id FROM reservas r
+                        JOIN cargadores c ON r.id_cargador = c.id_cargador
+                        WHERE r.id_usuario = %s AND r.estado IN ('Reservado', 'Activa')
+                        ORDER BY r.fecha_inicio ASC LIMIT 1;
+                    """, (user_id,))
+                    res_row = cur.fetchone()
+                    if res_row:
+                        ocpp_id_cargador = res_row[0]
+
+                    return {
+                        "activa": False, 
+                        "precio_por_kwh": precio_kwh,
+                        "ocpp_id": ocpp_id_cargador
+                    }
     except Exception as e:
          raise HTTPException(status_code=500, detail=str(e))
-
 @app.get("/api/usuario/{user_id}/historial")
 def get_historial(user_id: int):
     try:

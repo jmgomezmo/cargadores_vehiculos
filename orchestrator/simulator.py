@@ -94,9 +94,14 @@ class ChargePointSimulator(cp):
         logging.info("Carga finalizada exitosamente. Cargador Disponible.")
 
 async def main():
-    url = "ws://107.23.142.61:8080/CP_AVANZADO_01"
+    #url = "ws://107.23.142.61:8080/CP_AVANZADO_01"
+    url = "ws://ocpp.cynergiax.com:8080/CP_AVANZADO_01"
+    ###url = "wss://ocpp.cynergiax.com:8080/CP_AVANZADO_01"
+    #######url = "http://ocpp.cynergiax.com:8080/CP_AVANZADO_01"
     while True:
         try:
+            ##print(f"👉 VALOR REAL DE LA URL: {url}")
+
             async with websockets.connect(url, subprotocols=['ocpp1.6']) as ws:
                 cp_simulator = ChargePointSimulator('CP_AVANZADO_01', ws)
                 logging.info("🔗 Conectado a AWS. Listo para operar.")
