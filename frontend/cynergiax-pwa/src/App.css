@@ -9,14 +9,14 @@ body{margin:0;background:#06070a;color:var(--ink);font-family:Manrope,Arial,sans
 .signal i:nth-child(1){height:4px}.signal i:nth-child(2){height:7px}.signal i:nth-child(3){height:10px}.signal i:nth-child(4){height:13px}
 .greeting{display:flex;justify-content:space-between;align-items:center;margin:16px 0 23px}
 .eyebrow{color:var(--muted);font-size:12px;letter-spacing:.02em;margin:0 0 3px}
-.greeting h1{font-size:23px;margin:0;font-weight:700}
+.greeting h1 {  font-size: 23px;  margin: 0;  font-weight: 700;  color: #f8fafc; /* <-- Línea nueva */}
 .avatar{height:43px;width:43px;border:1px solid rgba(59,130,246,.5);border-radius:50%;background:linear-gradient(135deg,#315686,#121a2b);display:grid;place-items:center;color:#dbeafe;font-size:13px;font-weight:800}
 .connected{border:1px solid rgba(34,197,94,.3);background:rgba(34,197,94,.1);border-radius:99px;padding:8px 11px;color:#bbf7d0;font-size:11px;font-weight:700;display:flex;align-items:center;gap:7px;width:max-content}
 .dot{width:7px;height:7px;border-radius:50%;background:#22c55e;box-shadow:0 0 0 5px rgba(34,197,94,.1)}
 .charge-card{margin-top:14px;padding:22px;background:linear-gradient(140deg,#1d2535,#12161e);border:1px solid rgba(255,255,255,.075);border-radius:25px;overflow:hidden;position:relative}
 .charge-card:after{content:'';position:absolute;width:230px;height:230px;border:1px solid rgba(59,130,246,.2);border-radius:50%;right:-89px;top:-85px}
 .charger-name{font-size:12px;color:#aab5c4;margin:0 0 9px}
-.state{font-size:24px;font-weight:700;margin:0}
+.state {  font-size: 24px;  font-weight: 700;  margin: 0;  color: #f8fafc; }
 .metrics{margin:28px 0 19px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px 18px;position:relative;z-index:1}
 .metric{border-left:1px solid var(--line);padding-left:10px}
 .metric:first-child{border:0;padding-left:0}
@@ -31,7 +31,7 @@ body{margin:0;background:#06070a;color:var(--ink);font-family:Manrope,Arial,sans
 .primary:active{transform:scale(.98)}
 .primary.stop{background:#f87171;color:#2b0a0a}
 .section{display:flex;align-items:center;justify-content:space-between;margin:30px 0 13px}
-.section h2{margin:0;font-size:16px}
+.section h2{margin:0;font-size:16px;font-weight:600;color: #65a3f3;}
 .link{border:0;background:none;padding:0;color:#60a5fa;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer}
 .quick{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .tile{border:1px solid var(--line);border-radius:18px;background:rgba(23,27,36,.84);padding:16px;text-align:left;color:var(--ink);font-family:inherit;cursor:pointer}

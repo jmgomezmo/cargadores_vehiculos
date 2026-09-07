@@ -34,19 +34,57 @@ class StartChargeRequest(BaseModel):
     user_id: int
     charge_point_id: int
 
+class CancelReservationRequest(BaseModel):
+    reservation_id: int
+
+@app.post("/api/reservar/cancelar")
+def cancelar_reserva(req: CancelReservationRequest):
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE reservas 
+                    SET estado = 'Cancelada' 
+                    WHERE id_reserva = %s;
+                """, (req.reservation_id,))
+                conn.commit()
+        return {"status": "success", "message": "Reserva cancelada correctamente"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 @app.post("/api/reservar")
 def crear_reserva(req: ReservationRequest):
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
-                # El estado inicial al agendar es 'Reservado'
+                # 1. Validar si el cargador ya tiene una reserva cruzada en ese horario
+                cur.execute("""
+                    SELECT id_reserva FROM reservas 
+                    WHERE id_cargador = %s 
+                      AND estado IN ('Reservado', 'Activa')
+                      AND (
+                          (%s < fecha_fin) AND (%s > fecha_inicio)
+                      );
+                """, (req.charge_point_id, req.start_time, req.end_time))
+                
+                conflicto = cur.fetchone()
+                if conflicto:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail="El cargador ya se encuentra reservado en esta franja horaria por otro usuario."
+                    )
+
+                # 2. Si no hay cruce, proceder con la inserción
                 cur.execute("""
                     INSERT INTO reservas (id_usuario, id_cargador, fecha_inicio, fecha_fin, estado)
                     VALUES (%s, %s, %s, %s, 'Reservado') RETURNING id_reserva;
                 """, (req.user_id, req.charge_point_id, req.start_time, req.end_time))
                 res_id = cur.fetchone()[0]
                 conn.commit()
-        return {"status": "success", "ticket_reserva": f"RES-{res_id}"}
+                
+        return {"status": "success", "ticket_reserva": f"RES-{res_id}", "id_reserva": res_id}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -55,19 +93,32 @@ def iniciar_carga(req: StartChargeRequest):
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
-                # 1. Extracción del id_tag real
+                # 1. Validar estrictamente si el usuario tiene una reserva válida (Reservado o Activa)
+                cur.execute("""
+                    SELECT id_reserva FROM reservas 
+                    WHERE id_usuario = %s AND id_cargador = %s AND estado IN ('Reservado', 'Activa')
+                    LIMIT 1;
+                """, (req.user_id, req.charge_point_id))
+                reserva_valida = cur.fetchone()
+
+                if not reserva_valida:
+                    raise HTTPException(
+                        status_code=403, 
+                        detail="Acción no permitida: Debe realizar una reserva previa para iniciar la carga."
+                    )
+
+                # 2. Extracción del id_tag real
                 cur.execute("SELECT id_tag FROM usuarios WHERE id_usuario = %s;", (req.user_id,))
                 row = cur.fetchone()
                 if not row:
                     raise HTTPException(status_code=404, detail="Usuario no encontrado")
                 id_tag_usuario = row[0]
 
-                # 2. Actualizar estado de reserva de 'Reservado' a 'Activa' si aplica
+                # 3. Cambiar estado de reserva a 'Activa'
                 cur.execute("""
                     UPDATE reservas 
                     SET estado = 'Activa' 
-                    WHERE id_usuario = %s AND id_cargador = %s AND estado = 'Reservado'
-                      AND CURRENT_TIMESTAMP BETWEEN fecha_inicio AND fecha_fin;
+                    WHERE id_usuario = %s AND id_cargador = %s AND estado = 'Reservado';
                 """, (req.user_id, req.charge_point_id))
                 conn.commit()
 
@@ -91,16 +142,40 @@ def iniciar_carga(req: StartChargeRequest):
 @app.post("/api/detener_carga")
 def detener_carga(req: StartChargeRequest):
     try:
+        # 1. Enviar el comando físico al orquestador OCPP / Simulador
         payload_ocpp = {"charge_point_id": f"CP_AVANZADO_0{req.charge_point_id}"}
-        
-        # respuesta = requests.post("http://api.cynergiax.com:9090/remote_stop", json=payload_ocpp)
         respuesta = requests.post("http://127.0.0.1:9090/remote_stop", json=payload_ocpp)
         
-        if respuesta.status_code == 200:
-            return {"status": "success", "message": "Carga detenida"}
+        if respuesta.status_code != 200:
+            err_msg = respuesta.json().get("error", "Error en hardware al intentar detener la carga")
+            raise HTTPException(status_code=400, detail=err_msg)
         
-        err_msg = respuesta.json().get("error", "Error en hardware")
-        raise HTTPException(status_code=400, detail=err_msg)
+        # 2. Si el cargador se detuvo correctamente, actualizamos PostgreSQL
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                # Finalizar la sesión de carga activa
+                cur.execute("""
+                    UPDATE ocpp.sesiones_carga
+                    SET fecha_fin = CURRENT_TIMESTAMP
+                    WHERE id_usuario = %s 
+                      AND id_cargador = %s 
+                      AND fecha_fin IS NULL;
+                """, (req.user_id, req.charge_point_id))
+                
+                # Truncar la reserva activa para liberar el tiempo restante
+                cur.execute("""
+                    UPDATE ocpp.reservas
+                    SET fecha_fin = CURRENT_TIMESTAMP, 
+                        estado = 'Completada'
+                    WHERE id_usuario = %s 
+                      AND id_cargador = %s 
+                      AND estado = 'Activa';
+                """, (req.user_id, req.charge_point_id))
+                
+                conn.commit()
+                
+        return {"status": "success", "message": "Carga detenida y tiempo de reserva restante liberado."}
+    
     except HTTPException:
         raise
     except Exception as e:
@@ -124,7 +199,6 @@ def get_sesion_activa(user_id: int):
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
-                # 1. Obtener tarifa activa
                 cur.execute("""
                     SELECT precio_por_kwh FROM tarifas 
                     WHERE valido_desde <= CURRENT_TIMESTAMP 
@@ -134,7 +208,16 @@ def get_sesion_activa(user_id: int):
                 tarifa_row = cur.fetchone()
                 precio_kwh = float(tarifa_row[0]) if tarifa_row else 1850.0
 
-                # 2. Buscar sesión activa y su cargador asociado en la tabla cargadores
+                ocpp_id_cargador = "VC-0428"
+
+                # Verificar si tiene reserva válida vigente
+                cur.execute("""
+                    SELECT 1 FROM reservas 
+                    WHERE id_usuario = %s AND estado IN ('Reservado', 'Activa')
+                    LIMIT 1;
+                """, (user_id,))
+                tiene_reserva = cur.fetchone() is not None
+
                 cur.execute("""
                     SELECT t.id_sesion, t.fecha_inicio, t.medidor_inicio, c.ocpp_id,
                            COALESCE((SELECT MAX(CAST(valor AS NUMERIC)) FROM telemetria WHERE id_sesion = t.id_sesion), t.medidor_inicio) as current_meter
@@ -145,8 +228,6 @@ def get_sesion_activa(user_id: int):
                 """, (user_id,))
                 row = cur.fetchone()
                 
-                # 3. Si no hay sesión activa, buscar si tiene una reserva vigente o próxima
-                ocpp_id_cargador = "VC-0428" # Valor por defecto
                 if row:
                     trans_id, start_time, meter_start, ocpp_id_cargador, current_meter = row
                     minutos = int((datetime.now(timezone.utc) - start_time).total_seconds() / 60)
@@ -161,10 +242,10 @@ def get_sesion_activa(user_id: int):
                         "potencia_kw": 7.2,
                         "precio_por_kwh": precio_kwh,
                         "costo_estimado": costo_estimado,
-                        "ocpp_id": ocpp_id_cargador
+                        "ocpp_id": ocpp_id_cargador,
+                        "tiene_reserva": True
                     }
                 else:
-                    # Buscar cargador de la reserva más próxima del usuario
                     cur.execute("""
                         SELECT c.ocpp_id FROM reservas r
                         JOIN cargadores c ON r.id_cargador = c.id_cargador
@@ -178,10 +259,12 @@ def get_sesion_activa(user_id: int):
                     return {
                         "activa": False, 
                         "precio_por_kwh": precio_kwh,
-                        "ocpp_id": ocpp_id_cargador
+                        "ocpp_id": ocpp_id_cargador,
+                        "tiene_reserva": tiene_reserva
                     }
     except Exception as e:
          raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/usuario/{user_id}/historial")
 def get_historial(user_id: int):
     try:
@@ -201,3 +284,37 @@ def get_historial(user_id: int):
                 }
     except Exception as e:
          raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/reservas/disponibilidad/{charge_point_id}")
+def obtener_disponibilidad(charge_point_id: int, fecha: str):
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                # Consultar las horas de inicio de reservas activas/reservadas para ese día y cargador
+                cur.execute("""
+                    SELECT TO_CHAR(fecha_inicio AT TIME ZONE 'UTC', 'HH24:MI') as hora_inicio
+                    FROM reservas
+                    WHERE id_cargador = %s 
+                      AND estado IN ('Reservado', 'Activa')
+                      AND TO_CHAR(fecha_inicio AT TIME ZONE 'UTC', 'YYYY-MM-DD') = %s;
+                """, (charge_point_id, fecha))
+                rows = cur.fetchall()
+                horas_ocupadas = [row[0] for row in rows]
+                return {"ocupadas": horas_ocupadas}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ubicacion/{charge_point_id}")
+def obtener_ubicacion(charge_point_id: int):
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                # Si tienes relación entre cargadores y ubicaciones, ajusta el JOIN. 
+                # Por defecto tomaremos el primer registro de la tabla.
+                cur.execute("SELECT nombre FROM ocpp.ubicaciones LIMIT 1;")
+                row = cur.fetchone()
+                if row:
+                    return {"nombre": row[0]}
+                return {"nombre": "Comunidad Volta Blue"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

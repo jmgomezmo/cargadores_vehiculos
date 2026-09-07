@@ -17,31 +17,57 @@ export default function App() {
   const [range, setRange] = useState('284 km');
   const [meterWidth, setMeterWidth] = useState(0);
   const [ratePerKwh, setRatePerKwh] = useState(1850);
-  const [chargerName, setChargerName] = useState('VC-0428'); // Nombre dinámico del cargador
+  const [chargerName, setChargerName] = useState('VC-0428');
+  const [locationName, setLocationName] = useState('COMUNIDAD VOLTA NORTE');
 
-  const [userData, setUserData] = useState({ nombre: 'Andrés', avatar: 'AM' });
+  // Estados de Usuario e Historial
+  const [userData, setUserData] = useState({ nombre: 'Volta Blue', avatar: 'VB' });
   const [historyStats, setHistoryStats] = useState({ total_sesiones: 0, total_kwh: 0, costo_total_cop: 0 });
   
+  // Modales
   const [scannerOpen, setScannerOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmConfig, setConfirmConfig] = useState({ title: '', text: '', action: null, label: 'Confirmar' });
   
+  // Escáner QR
   const [scanState, setScanState] = useState({ text: 'BUSCANDO CÓDIGO…', resultShow: false, btnText: 'Simular escaneo' });
   const [manualEntryShow, setManualEntryShow] = useState(false);
   const [manualCode, setManualCode] = useState('');
 
-  const [selectedDay, setSelectedDay] = useState('Hoy');
-  const [selectedTime, setSelectedTime] = useState('');
-  const [selectedDuration, setSelectedDuration] = useState('2 horas');
-  const [availableHours, setAvailableHours] = useState(0);
-  const [reservationConfirmed, setReservationConfirmed] = useState(false);
-  const [reservationData, setReservationData] = useState({ time: 'Hoy · 14:00 — 16:00', charger: 'VC-0314', status: 'Activa' });
+  // Generación Dinámica de los próximos 7 días a partir de hoy
+  const daysList = React.useMemo(() => {
+    const list = [];
+    const baseDate = new Date(); 
+    const optionsWeekday = { weekday: 'short' };
+    const optionsMonth = { day: 'numeric', month: 'short' };
 
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(baseDate);
+      d.setDate(baseDate.getDate() + i);
+      const dateVal = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const label = i === 0 ? 'Hoy' : d.toLocaleDateString('es-ES', optionsWeekday);
+      const text = d.toLocaleDateString('es-ES', optionsMonth);
+      list.push({ label: label.charAt(0).toUpperCase() + label.slice(1), dateVal, text });
+    }
+    return list;
+  }, []);
+
+  // Reservas Dinámicas con Hora y Minuto
+  const [selectedDay, setSelectedDay] = useState(daysList[0]);
+  const [startHour, setStartHour] = useState('22');
+  const [startMinute, setStartMinute] = useState('00');
+  const [totalHours, setTotalHours] = useState(2);
+  const [reservationConfirmed, setReservationConfirmed] = useState(false);
+  const [reservationId, setReservationId] = useState(null); 
+  const [reservationData, setReservationData] = useState({ time: 'Sin reserva activa', status: 'Completada' });
+  const [hasReservation, setHasReservation] = useState(false);
+  
   const copFormatter = new Intl.NumberFormat('es-CO');
 
   useEffect(() => {
     fetchUserData();
     fetchHistoryData();
+    fetchLocationData();
     checkActiveSession();
 
     const interval = setInterval(() => {
@@ -51,10 +77,64 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  const availableHoursList = React.useMemo(() => {
+    const allHours = Array.from({length: 24}, (_, i) => String(i).padStart(2, '0'));
+    const todayStr = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
+    
+    if (selectedDay.dateVal === todayStr) {
+      const now = new Date();
+      const currentHour = now.getHours(); 
+      const currentMinute = now.getMinutes();
+      const minHour = currentMinute >= 45 ? currentHour + 1 : currentHour;
+      return allHours.filter(h => parseInt(h, 10) >= minHour);
+    }
+    return allHours;
+  }, [selectedDay]);
+
+  const availableMinutesList = React.useMemo(() => {
+    const allMinutes = ['00', '15', '30', '45'];
+    const todayStr = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
+    
+    if (selectedDay.dateVal === todayStr) {
+      const now = new Date();
+      const currentHourStr = String(now.getHours()).padStart(2, '0');
+      const currentMinute = now.getMinutes();
+      
+      // Asegurarse de que permita los minutos actuales (>= en lugar de >)
+      if (startHour === currentHourStr) {
+        return allMinutes.filter(m => parseInt(m, 10) >= currentMinute);
+      }
+    }
+    return allMinutes;
+  }, [selectedDay, startHour]);
+
+  useEffect(() => {
+    if (availableHoursList.length > 0 && !availableHoursList.includes(startHour)) {
+      setStartHour(availableHoursList[0]);
+    }
+  }, [availableHoursList, startHour]);
+
+  useEffect(() => {
+    if (availableMinutesList.length > 0 && !availableMinutesList.includes(startMinute)) {
+      setStartMinute(availableMinutesList[0]);
+    }
+  }, [availableMinutesList, startMinute]);
+
+  const fetchLocationData = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/ubicacion/${CP_ID}`);
+      if (res.data && res.data.nombre) {
+        setLocationName(res.data.nombre.toUpperCase());
+      }
+    } catch (e) {
+      console.error('Error al sincronizar ubicación');
+    }
+  };
+
   const fetchUserData = async () => {
     try {
       const res = await axios.get(`${API_URL}/usuario/${USER_ID}`);
-      setUserData(res.data);
+      if(res.data.nombre) setUserData(res.data);
     } catch (e) {
       console.error('Error al sincronizar usuario');
     }
@@ -73,12 +153,13 @@ export default function App() {
     try {
       const res = await axios.get(`${API_URL}/sesion/activa/${USER_ID}`);
       
-      if (res.data.precio_por_kwh) {
-        setRatePerKwh(res.data.precio_por_kwh);
-      }
+      if (res.data.precio_por_kwh) setRatePerKwh(res.data.precio_por_kwh);
+      if (res.data.ocpp_id) setChargerName(res.data.ocpp_id);
 
-      if (res.data.ocpp_id) {
-        setChargerName(res.data.ocpp_id);
+      if (reservationData.status === 'Reservado' || res.data.activa) {
+        setHasReservation(true);
+      } else {
+        setHasReservation(false);
       }
 
       if (res.data.activa) {
@@ -91,7 +172,11 @@ export default function App() {
         setMeterWidth(Math.min(67 + (res.data.minutos * 0.8), 100));
       } else {
         setCharging(false);
-        setStatusText('Listo para cargar');
+        if (!hasReservation && reservationData.status !== 'Reservado') {
+          setStatusText('Requiere reserva previa');
+        } else {
+          setStatusText('Listo para cargar');
+        }
         setPower('—');
         setEnergy('0.0');
         setDuration('0m');
@@ -124,7 +209,7 @@ export default function App() {
     } else {
       askConfirmation(
         '¿Terminar esta carga?',
-        'Se detendrá el suministro y se conservará el consumo acumulado de la sesión.',
+        'Se detendrá el suministro y se liberará el tiempo restante.',
         async () => {
           try {
             await axios.post(`${API_URL}/detener_carga`, {
@@ -132,9 +217,14 @@ export default function App() {
               charge_point_id: CP_ID
             });
             setCharging(false);
-            setStatusText('Carga finalizada');
+            setStatusText('Listo para cargar');
             setPower('—');
             setMeterWidth(0);
+            
+            // LIMPIEZA TOTAL DEL ESTADO DE RESERVA
+            setHasReservation(false);
+            setReservationData({ time: 'Sin reserva activa', status: 'Completada' });
+            
             fetchHistoryData();
           } catch (error) {
             alert('Error al detener la carga');
@@ -151,32 +241,63 @@ export default function App() {
   };
 
   const getEndTime = () => {
-    if (!selectedTime) return '';
-    const startHour = Number(selectedTime.slice(0, 2));
-    const durationHours = Number(selectedDuration[0]);
-    return String(startHour + durationHours).padStart(2, '0') + ':00';
+    if (!startHour || !startMinute) return '';
+    const h = parseInt(startHour, 10);
+    const endH = (h + totalHours) % 24;
+    return `${String(endH).padStart(2, '0')}:${startMinute}`;
   };
 
   const handleConfirmReservation = async () => {
     try {
-      const now = new Date();
-      const startTimeISO = now.toISOString().split('T')[0] + ` ${selectedTime}:00`;
-      const endTimeISO = now.toISOString().split('T')[0] + ` ${getEndTime()}:00`;
+      const startTimeISO = `${selectedDay.dateVal} ${startHour}:${startMinute}:00`;
+      const endTimeISO = `${selectedDay.dateVal} ${getEndTime()}:00`; 
 
-      await axios.post(`${API_URL}/reservar`, {
+      const res = await axios.post(`${API_URL}/reservar`, {
         user_id: USER_ID,
         charge_point_id: CP_ID,
         start_time: startTimeISO,
         end_time: endTimeISO
       });
 
-      const finalTimeStr = `${selectedDay} · ${selectedTime} — ${getEndTime()}`;
-      setReservationData({ time: finalTimeStr, charger: chargerName, status: 'Reservado' });
+      if (res.data.id_reserva) {
+        setReservationId(res.data.id_reserva);
+      }
+
+      const finalTimeStr = `${selectedDay.label} · ${startHour}:${startMinute} — ${getEndTime()}`;
+      setReservationData({ time: finalTimeStr, status: 'Reservado' });
+      setHasReservation(true);
       setReservationConfirmed(true);
-      setTimeout(() => { setActivePage('reservations'); }, 1200);
+      setTimeout(() => { setActivePage('reservations'); setReservationConfirmed(false); }, 1200);
     } catch (error) {
-      alert('Error al guardar la reserva en la base de datos');
+      const errMsg = error.response?.data?.detail || 'Conflicto: El cargador ya está reservado en esta franja horaria.';
+      alert(errMsg);
     }
+  };
+
+  const handleCancelReservation = () => {
+    askConfirmation(
+      '¿Cancelar esta reserva?',
+      'La franja volverá a estar disponible para otros residentes.',
+      async () => {
+        try {
+          if (reservationId) {
+            await axios.post(`${API_URL}/reservar/cancelar`, { reservation_id: reservationId });
+          }
+          setReservationData({ time: 'Sin reserva activa', status: 'Cancelada' });
+          setHasReservation(false);
+        } catch (error) {
+          alert('Error al cancelar la reserva en el servidor');
+        }
+      },
+      'Cancelar reserva'
+    );
+  };
+
+  // Función de apoyo para colorear los estados de la reserva
+  const getStatusColor = (status) => {
+    if (status === 'Cancelada') return { color: '#fca5a5', bg: 'rgba(248,113,113,.13)' };
+    if (status === 'Completada') return { color: '#94a3b8', bg: 'rgba(148,163,184,.13)' };
+    return { color: '#bbf7d0', bg: 'rgba(34,197,94,.12)' }; // Default (Reservado/Activa)
   };
 
   return (
@@ -195,7 +316,7 @@ export default function App() {
         <div className="connected"><span className="dot"></span> CARGADOR CONECTADO</div>
         
         <article className="charge-card">
-          <p className="charger-name">VOLTA HOME · {chargerName}</p>
+          <p className="charger-name">{locationName} · {chargerName}</p>
           <h2 className="state" aria-live="polite">{statusText}</h2>
           <div className="metrics">
             <div className="metric"><strong aria-live="polite">{energy}</strong><span>kWh HOY</span></div>
@@ -208,9 +329,11 @@ export default function App() {
           <p className="rate-note">Tarifa vigente: {copFormatter.format(ratePerKwh)} COP/kWh (BD). No incluye cargos adicionales.</p>
           <button 
             onClick={handleChargeToggle} 
+            disabled={!charging && !hasReservation}
             className={`primary ${charging ? 'stop' : ''}`}
+            style={{ opacity: (!charging && !hasReservation) ? 0.4 : 1, cursor: (!charging && !hasReservation) ? 'not-allowed' : 'pointer' }}
           >
-            {charging ? 'Terminar carga' : 'Iniciar carga'}
+            {charging ? 'Terminar carga' : (hasReservation ? 'Iniciar carga' : 'Requiere reserva')}
           </button>
         </article>
 
@@ -234,14 +357,14 @@ export default function App() {
         <div className="section"><h2>Tus reservas</h2><button className="link" onClick={() => setActivePage('reservations')}>Ver todas</button></div>
         <button className="activity" onClick={() => setActivePage('reservations')} style={{ width: '100%', textAlign: 'left', color: 'inherit', fontFamily: 'inherit', cursor: 'pointer' }}>
           <div className="activity-icon">◷</div>
-          <div><h3 id="homeReservationCharger">Cargador {reservationData.charger}</h3><p id="homeReservationTime">{reservationData.time}</p></div>
-          <b style={{ color: reservationData.status === 'Cancelada' ? '#fca5a5' : '#bbf7d0' }}>{reservationData.status}</b>
+          <div><h3 id="homeReservationCharger">Cargador {chargerName}</h3><p id="homeReservationTime">{reservationData.time}</p></div>
+          <b style={{ color: getStatusColor(reservationData.status).color }}>{reservationData.status}</b>
         </button>
 
         <div className="section"><h2>Última sesión</h2><button className="link" onClick={() => setActivePage('history')}>Ver historial</button></div>
         <div className="activity">
           <div className="activity-icon">ϟ</div>
-          <div><h3>Volta Home · {chargerName}</h3><p>Ayer · 20:14 — 22:03</p></div>
+          <div><h3>{locationName} · {chargerName}</h3><p>Ayer · 20:14 — 22:03</p></div>
           <b>16.8 kWh</b>
         </div>
       </section>
@@ -253,7 +376,7 @@ export default function App() {
         <h1 style={{ fontSize: '28px', margin: '4px 0' }}>Tu energía</h1>
         <div className="big-total">{historyStats.total_kwh} <small style={{ fontSize: '17px', color: 'var(--muted)' }}>kWh</small></div>
         <p className="amount"><span id="monthlyCost">$ {copFormatter.format(historyStats.costo_total_cop)} COP</span> · {historyStats.total_sesiones} sesiones registradas</p>
-        <p className="rate-note">Cálculo basado en tarifa de base de datos ({copFormatter.format(ratePerKwh)} COP/kWh).</p>
+        <p className="rate-note">Cálculo basado en tarifas actuales ({copFormatter.format(ratePerKwh)} COP/kWh).</p>
         <div className="chart" style={{ marginTop: '20px' }}>
           <div className="bar" data-day="L" style={{ height: '36%' }}></div>
           <div className="bar" data-day="M" style={{ height: '54%' }}></div>
@@ -271,116 +394,125 @@ export default function App() {
         </div>
       </section>
 
-      {/* VISTA: AGENDAR UNA CARGA */}
+      {/* VISTA: AGENDAR UNA CARGA (DOBLE SELECTOR HORA/MIN) */}
       <section className={`detail-page ${activePage === 'booking' ? 'show' : ''}`} id="booking">
         <button className="back" onClick={() => setActivePage('home')}>← Inicio</button>
-        <p className="eyebrow" style={{ marginTop: '28px' }}>RESERVA COMUNITARIA</p>
+        <p className="eyebrow" style={{ marginTop: '28px' }}>{locationName}</p>
         <h1 style={{ fontSize: '28px', lineHeight: '1.12', margin: '4px 0' }}>Agenda tu carga</h1>
-        <p className="community-note">La potencia del condominio es compartida. Las reservas permiten que cada residente tenga acceso justo a los cargadores disponibles.</p>
+        <p className="community-note">Selecciona un día y la hora de inicio (fracciones de 15 min) para programar tu suministro.</p>
         
-        <div className="section"><h2>Selecciona un día</h2></div>
+        <div className="section"><h2>Selecciona un día (Próxima semana)</h2></div>
         <div className="date-rail" style={{ display: 'flex', gap: '9px', overflowX: 'auto', paddingBottom: '4px' }}>
-          {['Hoy · 4 sep', 'Vie · 5 sep', 'Sáb · 6 sep', 'Dom · 7 sep'].map((dayText, idx) => {
-            const label = dayText.split(' · ')[0];
-            const dateVal = dayText.split(' · ')[1];
-            return (
-              <button 
-                key={idx} 
-                className={`date ${selectedDay === label ? 'selected' : ''}`} 
-                onClick={() => setSelectedDay(label)}
-                style={{ flex: '0 0 80px', border: '1px solid var(--line)', borderRadius: '14px', background: selectedDay === label ? '#1b3158' : '#171b24', color: selectedDay === label ? '#eff6ff' : '#aab5c4', padding: '10px 6px', fontFamily: 'inherit', cursor: 'pointer' }}
-              >
-                <b style={{ display: 'block', fontSize: '12px', color: 'inherit' }}>{label}</b>
-                <span style={{ fontSize: '11px' }}>{dateVal}</span>
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="section"><h2>Horario disponible</h2><span style={{ fontSize: '11px', color: 'var(--muted)' }}>7.2 kW máx.</span></div>
-        <div className="slot-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '10px' }}>
-          {[
-            { time: '08:00', hours: 2, disabled: false },
-            { time: '10:00', hours: 2, disabled: false },
-            { time: '12:00', hours: 0, disabled: true },
-            { time: '14:00', hours: 2, disabled: false },
-            { time: '16:00', hours: 2, disabled: false },
-            { time: '18:00', hours: 0, disabled: true }
-          ].map((slot, i) => (
+          {daysList.map((item, idx) => (
             <button 
-              key={i} 
-              disabled={slot.disabled}
-              className={`slot ${selectedTime === slot.time ? 'selected' : ''}`}
-              onClick={() => {
-                if (!slot.disabled) {
-                  setSelectedTime(slot.time);
-                  setAvailableHours(slot.hours);
-                }
-              }}
-              style={{ border: '1px solid var(--line)', borderRadius: '13px', background: selectedTime === slot.time ? '#2563eb' : '#171b24', color: slot.disabled ? '#475569' : '#e2e8f0', padding: '13px 10px', fontFamily: 'inherit', fontSize: '13px', fontWeight: 700, cursor: slot.disabled ? 'not-allowed' : 'pointer', textDecoration: slot.disabled ? 'line-through' : 'none' }}
+              key={idx} 
+              className={`date ${selectedDay.dateVal === item.dateVal ? 'selected' : ''}`} 
+              onClick={() => setSelectedDay(item)}
+              style={{ flex: '0 0 80px', border: '1px solid var(--line)', borderRadius: '14px', background: selectedDay.dateVal === item.dateVal ? '#1b3158' : '#171b24', color: selectedDay.dateVal === item.dateVal ? '#eff6ff' : '#aab5c4', padding: '10px 6px', fontFamily: 'inherit', cursor: 'pointer' }}
             >
-              {slot.time}
-              <small style={{ display: 'block', color: slot.disabled ? '#475569' : '#94a3b8', marginTop: '3px', fontSize: '11px', fontWeight: 500 }}>
-                {slot.disabled ? 'Ocupado' : `Hasta ${String(Number(slot.time.slice(0,2)) + slot.hours).padStart(2, '0')}:00`}
-              </small>
+              <b style={{ display: 'block', fontSize: '12px', color: 'inherit' }}>{item.label}</b>
+              <span style={{ fontSize: '11px' }}>{item.text}</span>
             </button>
           ))}
         </div>
 
-        <div className="section"><h2>Duración estimada</h2></div>
-        <div className="duration-options" style={{ display: 'flex', gap: '9px' }}>
-          {['1 hora', '2 horas', '3 horas'].map((dur, i) => {
-            const hoursNum = i + 1;
-            const isDisabled = availableHours > 0 && hoursNum > availableHours;
-            return (
-              <button 
-                key={i}
-                disabled={isDisabled}
-                className={`duration ${selectedDuration === dur ? 'selected' : ''}`}
-                onClick={() => setSelectedDuration(dur)}
-                style={{ flex: 1, border: '1px solid var(--line)', borderRadius: '12px', background: selectedDuration === dur ? '#eff6ff' : '#171b24', color: selectedDuration === dur ? '#172554' : '#aab5c4', padding: '11px 6px', fontFamily: 'inherit', fontSize: '12px', fontWeight: 700, opacity: isDisabled ? 0.4 : 1, cursor: isDisabled ? 'not-allowed' : 'pointer' }}
-              >
-                {dur}
-              </button>
-            );
-          })}
+        {/* SELECTORES DE HORA Y MINUTO */}
+        <div className="section"><h2>Hora de inicio</h2><span style={{ fontSize: '11px', color: 'var(--muted)' }}>Formato 24h</span></div>
+        <div style={{ display: 'flex', gap: '10px', marginBottom: '16px' }}>
+          {availableHoursList.length > 0 ? (
+            <>
+              <div style={{ flex: 1 }}>
+                <select 
+                  value={startHour} 
+                  onChange={(e) => setStartHour(e.target.value)}
+                  style={{ width: '100%', padding: '14px', borderRadius: '13px', background: '#171b24', color: '#f8fafc', border: '1px solid var(--line)', fontSize: '15px', fontWeight: 700, fontFamily: 'inherit', outline: 'none', cursor: 'pointer' }}
+                >
+                  {availableHoursList.map((h) => (
+                    <option key={h} value={h} style={{ background: '#171b24', color: '#f8fafc' }}>
+                      {h} hrs
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ flex: 1 }}>
+                <select 
+                  value={startMinute} 
+                  onChange={(e) => setStartMinute(e.target.value)}
+                  style={{ width: '100%', padding: '14px', borderRadius: '13px', background: '#171b24', color: '#f8fafc', border: '1px solid var(--line)', fontSize: '15px', fontWeight: 700, fontFamily: 'inherit', outline: 'none', cursor: 'pointer' }}
+                >
+                  {availableMinutesList.map((m) => (
+                    <option key={m} value={m} style={{ background: '#171b24', color: '#f8fafc' }}>
+                      {m} min
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </>
+          ) : (
+            <p style={{ fontSize: '13px', color: '#fca5a5', padding: '10px 0', flex: 1 }}>No hay horas disponibles restantes para el día de hoy.</p>
+          )}
+        </div>
+
+        {/* SELECTOR DE DURACIÓN */}
+        <div className="section"><h2>Duración estimada</h2><span style={{ fontSize: '11px', color: 'var(--muted)' }}>7.2 kW máx.</span></div>
+        <div className="duration-options" style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '4px' }}>
+          {[1, 2, 3, 4, 5, 6].map((h) => (
+            <button 
+              key={h}
+              className={`duration ${totalHours === h ? 'selected' : ''}`}
+              onClick={() => setTotalHours(h)}
+              style={{ flex: 1, border: '1px solid var(--line)', borderRadius: '12px', background: totalHours === h ? '#eff6ff' : '#171b24', color: totalHours === h ? '#172554' : '#aab5c4', padding: '11px 4px', fontFamily: 'inherit', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}
+            >
+              {h} {h === 1 ? 'hora' : 'horas'}
+            </button>
+          ))}
         </div>
 
         <div className="booking-summary" style={{ marginTop: '22px', borderRadius: '18px', padding: '15px', background: '#171b24', border: '1px solid var(--line)' }}>
-          <p style={{ display: 'flex', justifyContent: 'space-between', margin: '0 0 8px', color: '#94a3b8', fontSize: '12px' }}><span>Tu reserva</span><span>{selectedTime ? `${selectedDay} · ${selectedTime} — ${getEndTime()}` : 'Selecciona un horario'}</span></p>
-          <p style={{ display: 'flex', justifyContent: 'space-between', margin: '0 0 8px', color: '#94a3b8', fontSize: '12px' }}><span>Duración</span><span>{selectedDuration}</span></p>
+          <p style={{ display: 'flex', justifyContent: 'space-between', margin: '0 0 8px', color: '#94a3b8', fontSize: '12px' }}><span>Tu reserva</span><span>{selectedDay.label} · {startHour}:{startMinute} — {getEndTime()}</span></p>
+          <p style={{ display: 'flex', justifyContent: 'space-between', margin: '0 0 8px', color: '#94a3b8', fontSize: '12px' }}><span>Duración</span><span>{totalHours} {totalHours === 1 ? 'hora' : 'horas'}</span></p>
           <p style={{ display: 'flex', justifyContent: 'space-between', margin: 0, color: '#e2e8f0', fontWeight: 700 }}><span>Cargador asignado</span><span>{chargerName}</span></p>
         </div>
 
         {reservationConfirmed && (
           <div className="booking-success show" style={{ marginTop: '14px', padding: '13px 14px', borderRadius: '13px', background: 'rgba(34,197,94,.13)', color: '#bbf7d0', fontSize: '12px', lineHeight: '1.45' }}>
-            ✓ Reserva guardada en PostgreSQL para {selectedDay} · {selectedTime} — {getEndTime()}.
+            ✓ Reserva Agendada para {selectedDay.label} de {startHour}:{startMinute} a {getEndTime()}.
           </div>
         )}
 
         <button 
           className="primary" 
-          disabled={!selectedTime} 
+          disabled={availableHoursList.length === 0}
           onClick={handleConfirmReservation}
-          style={{ opacity: !selectedTime ? 0.4 : 1, marginTop: '20px' }}
+          style={{ marginTop: '20px', opacity: availableHoursList.length === 0 ? 0.4 : 1, cursor: availableHoursList.length === 0 ? 'not-allowed' : 'pointer' }}
         >
-          {selectedTime ? 'Guardar reserva en BD' : 'Selecciona un horario'}
+          Reservar
         </button>
       </section>
 
       {/* VISTA: LISTA DE RESERVAS */}
       <section className={`detail-page ${activePage === 'reservations' ? 'show' : ''}`} id="reservations">
         <button className="back" onClick={() => setActivePage('home')}>← Inicio</button>
-        <p className="eyebrow" style={{ marginTop: '28px' }}>COMUNIDAD VOLTA NORTE</p>
+        <p className="eyebrow" style={{ marginTop: '28px' }}>{locationName}</p>
         <h1 style={{ fontSize: '28px', margin: '4px 0 26px' }}>Tus reservas</h1>
         <article className="reservation-card">
-          <div className="reservation-top"><strong>Cargador {reservationData.charger}</strong><span className="reservation-status" style={{ color: reservationData.status === 'Cancelada' ? '#fca5a5' : '#bbf7d0', background: reservationData.status === 'Cancelada' ? 'rgba(248,113,113,.13)' : 'rgba(34,197,94,.12)' }}>{reservationData.status}</span></div>
+          <div className="reservation-top">
+            <strong>Cargador {chargerName}</strong>
+            <span 
+              className="reservation-status" 
+              style={{ color: getStatusColor(reservationData.status).color, background: getStatusColor(reservationData.status).bg }}
+            >
+              {reservationData.status}
+            </span>
+          </div>
           <div className="reservation-time">{reservationData.time}</div>
           <div className="reservation-meta">Nivel 1 · Parqueadero de visitantes · 7,2 kW máx.</div>
-          {reservationData.status !== 'Cancelada' && (
+          
+          {/* Ocultar los botones si la reserva está Completada o Cancelada */}
+          {reservationData.status === 'Reservado' && (
             <div className="reservation-actions" style={{ display: 'flex', gap: '8px', marginTop: '14px' }}>
               <button className="mini-action" onClick={() => setActivePage('booking')} style={{ border: '1px solid var(--line)', borderRadius: '10px', background: 'transparent', color: '#bfdbfe', padding: '8px 10px', cursor: 'pointer', fontWeight: 700 }}>Modificar</button>
-              <button className="mini-action danger" onClick={() => askConfirmation('¿Cancelar esta reserva?', 'La franja volverá a estar disponible para otros residentes.', () => { setReservationData(prev => ({ ...prev, status: 'Cancelada' })); }, 'Cancelar reserva')} style={{ border: '1px solid var(--line)', borderRadius: '10px', background: 'transparent', color: '#fca5a5', padding: '8px 10px', cursor: 'pointer', fontWeight: 700 }}>Cancelar</button>
+              <button className="mini-action danger" onClick={handleCancelReservation} style={{ border: '1px solid var(--line)', borderRadius: '10px', background: 'transparent', color: '#fca5a5', padding: '8px 10px', cursor: 'pointer', fontWeight: 700 }}>Cancelar</button>
             </div>
           )}
         </article>
@@ -393,7 +525,7 @@ export default function App() {
         <h1 style={{ fontSize: '28px', margin: '4px 0 20px' }}>Historial de carga</h1>
         <div className="history-row">
           <div className="activity-icon">ϟ</div>
-          <div><strong>Volta Home · {chargerName}</strong><p>Ayer · 20:14 — 22:03</p></div>
+          <div><strong>{locationName} · {chargerName}</strong><p>Ayer · 20:14 — 22:03</p></div>
           <b>16.8 kWh<br/><small style={{ color: 'var(--muted)' }}>$31.080</small></b>
         </div>
       </section>
